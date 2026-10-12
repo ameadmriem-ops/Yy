@@ -339,6 +339,14 @@ body.light-mode .auth-input{background:#f7f8fa;color:#111;border:1.5px solid #cf
           <div id="modalAltTitlesList" style="display:flex;flex-wrap:wrap;gap:6px;min-height:36px"></div>
         </div>
 
+        <div style="background:#0d0d0d;border:1px solid #262626;border-radius:12px;padding:12px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <div style="font-size:12px;font-weight:bold;color:#bbb">🎬 تصنيفات العمل (تحديد متعدد):</div>
+            <button type="button" onclick="window.clearModalSelectedGenres()" style="background:none;border:none;color:#888;font-size:11px;cursor:pointer">مسح الكل</button>
+          </div>
+          <div id="modalGenresChipsContainer" style="display:flex;flex-wrap:wrap;gap:6px;max-height:160px;overflow-y:auto;padding:2px 0"></div>
+        </div>
+
         <div id="editAltTitlesStatusMsg" style="font-size:12px;color:#aaa;text-align:center;min-height:16px"></div>
 
         <div style="display:flex;gap:10px;margin-top:4px">
@@ -1910,10 +1918,17 @@ onSnapshot(q,(s)=>{
     } else if (typeof data.alternativeTitles === "string" && data.alternativeTitles.trim()) {
       alts = data.alternativeTitles.split(/[,،\n]+/).map(x => x.trim()).filter(Boolean);
     }
+    let genres = [];
+    if (Array.isArray(data.genres)) {
+      genres = data.genres.map(x => String(x || "").trim()).filter(Boolean);
+    } else if (typeof data.genres === "string" && data.genres.trim()) {
+      genres = data.genres.split(/[,،\n]+/).map(x => x.trim()).filter(Boolean);
+    }
     return {
       firebaseId: d.id,
       ...data,
-      alternativeTitles: alts
+      alternativeTitles: alts,
+      genres: genres
     };
   });
   if (window._pendingFcmNotification) {
@@ -2004,14 +2019,267 @@ window.renderHome=()=>{
   main.innerHTML=`<div class="hero"><h1>BLACK ANIME</h1></div><div class="movies-grid">${hourlyItems.map(createCard).join("")}</div>`;
   setActiveNav("home");
 };
-window.renderCategory=(type)=>{
+// ==================== Anime & Animation Genres System ====================
+window.APP_GENRES = [
+  { id: "action", ar: "أكشن", en: "Action" },
+  { id: "adventure", ar: "مغامرات", en: "Adventure" },
+  { id: "comedy", ar: "كوميدي", en: "Comedy" },
+  { id: "drama", ar: "دراما", en: "Drama" },
+  { id: "fantasy", ar: "خيال", en: "Fantasy" },
+  { id: "scifi", ar: "خيال علمي", en: "Sci-Fi" },
+  { id: "horror", ar: "رعب", en: "Horror" },
+  { id: "mystery", ar: "غموض", en: "Mystery" },
+  { id: "romance", ar: "رومانسي", en: "Romance" },
+  { id: "sports", ar: "رياضي", en: "Sports" },
+  { id: "slice_of_life", ar: "شريحة من الحياة", en: "Slice of Life" },
+  { id: "supernatural", ar: "خارق للطبيعة", en: "Supernatural" },
+  { id: "thriller", ar: "تشويق", en: "Thriller" },
+  { id: "historical", ar: "تاريخي", en: "Historical" },
+  { id: "music", ar: "موسيقي", en: "Music" },
+  { id: "military", ar: "عسكري", en: "Military" },
+  { id: "cooking", ar: "طبخ", en: "Cooking" },
+  { id: "school", ar: "مدرسي", en: "School" },
+  { id: "game", ar: "ألعاب", en: "Game" },
+  { id: "martial_arts", ar: "فنون قتالية", en: "Martial Arts" },
+  { id: "isekai", ar: "إيسكاي (عالم مختلف)", en: "Isekai" },
+  { id: "psychological", ar: "نفسي", en: "Psychological" },
+  { id: "police", ar: "بوليسي", en: "Police" },
+  { id: "cyberpunk", ar: "سايبربانك", en: "Cyberpunk" },
+  { id: "mecha", ar: "ميكا", en: "Mecha" },
+  { id: "shounen", ar: "شونين", en: "Shounen" },
+  { id: "shoujo", ar: "شوجو", en: "Shoujo" },
+  { id: "seinen", ar: "سينين", en: "Seinen" },
+  { id: "josei", ar: "جوسي", en: "Josei" },
+  { id: "kids", ar: "أطفال", en: "Kids" }
+];
+
+window.categoryFilterState = {
+  anime: { selectedGenres: [], tempSelectedGenres: [], isOpen: false, genreSearch: "" },
+  animation: { selectedGenres: [], tempSelectedGenres: [], isOpen: false, genreSearch: "" }
+};
+
+window.itemMatchesGenre = function(item, targetGenre) {
+  if (!item || !targetGenre) return false;
+  const targetNorm = window.normalizeSearchText(targetGenre);
+  if (!targetNorm) return false;
+
+  // 1. Direct match in item.genres
+  const itemGenres = Array.isArray(item.genres) ? item.genres : [];
+  for (const g of itemGenres) {
+    if (g && (window.normalizeSearchText(g) === targetNorm || window.normalizeSearchText(g).includes(targetNorm) || targetNorm.includes(window.normalizeSearchText(g)))) {
+      return true;
+    }
+  }
+
+  // 2. Backward compatibility with legacy category or type
+  if (item.category && (window.normalizeSearchText(item.category) === targetNorm || window.normalizeSearchText(item.category).includes(targetNorm))) {
+    return true;
+  }
+  if (targetNorm === "رياضي" && (item.type === "sports" || (item.category && item.category.includes("رياض")))) {
+    return true;
+  }
+  if (targetNorm === "اطفال" && (item.type === "kids" || (item.category && item.category.includes("طفل")))) {
+    return true;
+  }
+  return false;
+};
+
+window.itemMatchesSelectedGenres = function(item, selectedGenresList) {
+  if (!selectedGenresList || selectedGenresList.length === 0) return true;
+  return selectedGenresList.every(g => window.itemMatchesGenre(item, g));
+};
+
+window.toggleCategoryFilterPanel = function(type) {
+  const baseKey = (type === "animation" || type === "arabic" || type === "sports") ? "animation" : "anime";
+  const state = window.categoryFilterState[baseKey];
+  state.isOpen = !state.isOpen;
+  state.tempSelectedGenres = [...state.selectedGenres];
+  state.genreSearch = "";
+  window.renderCategory(baseKey);
+};
+
+window.toggleTempCategoryGenre = function(baseKey, genreAr) {
+  const state = window.categoryFilterState[baseKey];
+  const idx = state.tempSelectedGenres.indexOf(genreAr);
+  if (idx > -1) {
+    state.tempSelectedGenres.splice(idx, 1);
+  } else {
+    state.tempSelectedGenres.push(genreAr);
+  }
+  const container = document.getElementById("categoryGenreChips-" + baseKey);
+  if (container) {
+    container.innerHTML = window.renderFilterPanelChipsHtml(baseKey);
+  }
+};
+
+window.applyCategoryFilter = function(baseKey) {
+  const state = window.categoryFilterState[baseKey];
+  state.selectedGenres = [...state.tempSelectedGenres];
+  state.isOpen = false;
+  window.renderCategory(baseKey);
+};
+
+window.clearCategoryFilter = function(baseKey) {
+  const state = window.categoryFilterState[baseKey];
+  state.selectedGenres = [];
+  state.tempSelectedGenres = [];
+  state.isOpen = false;
+  window.renderCategory(baseKey);
+};
+
+window.cancelCategoryFilter = function(baseKey) {
+  const state = window.categoryFilterState[baseKey];
+  state.tempSelectedGenres = [...state.selectedGenres];
+  state.isOpen = false;
+  window.renderCategory(baseKey);
+};
+
+window.removeSingleActiveGenre = function(baseKey, genreAr) {
+  const state = window.categoryFilterState[baseKey];
+  state.selectedGenres = state.selectedGenres.filter(g => g !== genreAr);
+  state.tempSelectedGenres = [...state.selectedGenres];
+  window.renderCategory(baseKey);
+};
+
+window.filterGenreChipsList = function(searchVal, baseKey) {
+  const state = window.categoryFilterState[baseKey];
+  state.genreSearch = searchVal || "";
+  const container = document.getElementById("categoryGenreChips-" + baseKey);
+  if (container) {
+    container.innerHTML = window.renderFilterPanelChipsHtml(baseKey);
+  }
+};
+
+window.renderFilterPanelChipsHtml = function(baseKey) {
+  const state = window.categoryFilterState[baseKey];
+  const qNorm = window.normalizeSearchText(state.genreSearch || "");
+  const list = window.APP_GENRES.filter(g => {
+    if (!qNorm) return true;
+    return window.normalizeSearchText(g.ar).includes(qNorm) || window.normalizeSearchText(g.en).includes(qNorm);
+  });
+  if (list.length === 0) {
+    return '<div style="font-size:12px;color:#777;padding:10px;text-align:center;width:100%">لا يوجد تصنيف مطابق للبحث</div>';
+  }
+  return list.map(g => {
+    const isSelected = state.tempSelectedGenres.includes(g.ar);
+    return `
+      <button type="button" onclick="window.toggleTempCategoryGenre('${baseKey}', '${g.ar}')" style="background:${isSelected ? '#e50914' : '#1e1e1e'};color:${isSelected ? '#fff' : '#ccc'};border:1px solid ${isSelected ? '#e50914' : '#333'};padding:6px 11px;border-radius:16px;font-size:12px;font-weight:${isSelected ? 'bold' : 'normal'};cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:all 0.15s">
+        <span>${isSelected ? '✓ ' : ''}${g.ar}</span>
+        <span style="font-size:10px;opacity:0.7">(${g.en})</span>
+      </button>
+    `;
+  }).join("");
+};
+
+window.renderCategory = (type) => {
   let isAnimation = type === "animation" || type === "arabic" || type === "sports";
-  let items = window.allContent.filter(x => {
+  let baseKey = isAnimation ? "animation" : "anime";
+  let state = window.categoryFilterState[baseKey] || { selectedGenres: [], tempSelectedGenres: [], isOpen: false, genreSearch: "" };
+  window.categoryFilterState[baseKey] = state;
+
+  // 1. Filter by content type (Anime vs Animation)
+  let allSectionItems = window.allContent.filter(x => {
     if (isAnimation) return x.type === "animation" || x.type === "arabic" || x.type === "sports";
     return x.type === "anime" || x.type === "foreign" || x.type === "news" || x.type === "entertainment";
   });
+
+  // 2. Filter by applied genres
+  let filteredItems = allSectionItems.filter(item => {
+    return window.itemMatchesSelectedGenres(item, state.selectedGenres);
+  });
+
   let catTitle = isAnimation ? t("cat_animation") : t("cat_anime");
-  main.innerHTML=`<div class="page-header"><button class="back-btn" onclick="goBack()">${t("back_btn")}</button></div><div class="hero" style="height:100px;margin-top:0"><h1 style="font-size:26px">${catTitle}</h1></div><div class="movies-grid">${items.map(createCard).join("")}</div>`;
+  let activeCount = state.selectedGenres.length;
+
+  let activeChipsHtml = (state.selectedGenres || []).map(g => `
+    <span style="display:inline-flex;align-items:center;gap:5px;background:#e50914;color:#fff;padding:4px 10px;border-radius:14px;font-size:11px;font-weight:bold">
+      <span>${window.escapeDescHtml(g)}</span>
+      <button type="button" onclick="event.stopPropagation();window.removeSingleActiveGenre('${baseKey}','${window.escapeDescHtml(g)}')" style="background:none;border:none;color:#fff;font-size:12px;cursor:pointer;padding:0 2px;line-height:1" title="إزالة">✕</button>
+    </span>
+  `).join("");
+
+  let filterBarHtml = `
+    <div style="padding:10px 14px 4px 14px;display:flex;flex-direction:column;gap:8px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <button type="button" onclick="window.toggleCategoryFilterPanel('${baseKey}')" style="background:${state.isOpen ? '#fff' : (activeCount > 0 ? '#e50914' : '#1e1e1e')};color:${state.isOpen ? '#000' : '#fff'};border:1px solid ${state.isOpen ? '#fff' : (activeCount > 0 ? '#e50914' : '#333')};padding:8px 14px;border-radius:20px;font-size:13px;font-weight:bold;cursor:pointer;display:inline-flex;align-items:center;gap:6px">
+          <span>🎯 تصفية حسب التصنيف</span>
+          ${activeCount > 0 ? `<span style="background:${state.isOpen ? '#e50914' : '#fff'};color:${state.isOpen ? '#fff' : '#000'};border-radius:10px;padding:1px 7px;font-size:11px">${activeCount}</span>` : ''}
+          <span style="font-size:10px">${state.isOpen ? '▲' : '▼'}</span>
+        </button>
+        ${activeCount > 0 ? `
+          <button type="button" onclick="window.clearCategoryFilter('${baseKey}')" style="background:#260a0a;color:#ff6b6b;border:1px solid #4a1515;padding:7px 12px;border-radius:16px;font-size:12px;font-weight:bold;cursor:pointer">
+            ✕ إزالة التصنيف (${activeCount})
+          </button>
+        ` : ''}
+      </div>
+      ${activeCount > 0 ? `
+        <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+          <span style="font-size:11px;color:#888">التصنيفات المطبقة:</span>
+          ${activeChipsHtml}
+        </div>
+      ` : ''}
+    </div>
+  `;
+
+  let filterPanelHtml = "";
+  if (state.isOpen) {
+    let chipsListHtml = window.renderFilterPanelChipsHtml(baseKey);
+    filterPanelHtml = `
+      <div id="categoryFilterPanel-${baseKey}" style="background:#141414;border:1px solid #2a2a2a;border-radius:14px;margin:8px 14px 14px 14px;padding:14px;display:flex;flex-direction:column;gap:12px;box-shadow:0 6px 20px rgba(0,0,0,0.5)">
+        <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #222;padding-bottom:8px">
+          <div style="font-size:14px;font-weight:900;color:#fff;display:flex;align-items:center;gap:6px">
+            <span>🏷️ اختيار تصنيفات ${catTitle}</span>
+            <span style="font-size:11px;color:#888">(يمكنك تحديد أكثر من تصنيف)</span>
+          </div>
+          <button type="button" onclick="window.cancelCategoryFilter('${baseKey}')" style="background:none;border:none;color:#888;font-size:18px;cursor:pointer;padding:2px 6px">✕</button>
+        </div>
+        <input class="input" style="padding:8px 12px;font-size:12px;margin:0" placeholder="🔍 ابحث في قائمة التصنيفات..." oninput="window.filterGenreChipsList(this.value, '${baseKey}')">
+        <div id="categoryGenreChips-${baseKey}" style="display:flex;flex-wrap:wrap;gap:6px;max-height:200px;overflow-y:auto;padding:4px 0">
+          ${chipsListHtml}
+        </div>
+        <div style="display:flex;gap:8px;padding-top:8px;border-top:1px solid #222">
+          <button type="button" onclick="window.applyCategoryFilter('${baseKey}')" style="flex:2;background:linear-gradient(135deg,#e50914,#b80610);color:#fff;border:none;padding:10px;border-radius:10px;font-weight:bold;font-size:13px;cursor:pointer">
+            ✅ تطبيق
+          </button>
+          <button type="button" onclick="window.clearCategoryFilter('${baseKey}')" style="flex:1;background:#1e1e1e;color:#bbb;border:1px solid #333;padding:10px;border-radius:10px;font-size:12px;cursor:pointer">
+            إزالة التصنيف
+          </button>
+          <button type="button" onclick="window.cancelCategoryFilter('${baseKey}')" style="background:#161616;color:#888;border:1px solid #282828;padding:10px 14px;border-radius:10px;font-size:12px;cursor:pointer">
+            إلغاء
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  let contentHtml = "";
+  if (filteredItems.length > 0) {
+    contentHtml = `
+      <div style="padding:0 14px 6px 14px;font-size:12px;color:#777">
+        عرض ${filteredItems.length} عمل من أصل ${allSectionItems.length}
+      </div>
+      <div class="movies-grid">${filteredItems.map(createCard).join("")}</div>
+    `;
+  } else {
+    contentHtml = `
+      <div style="text-align:center;padding:50px 20px;color:#888">
+        <div style="font-size:42px;margin-bottom:12px">🎭</div>
+        <div style="font-size:16px;color:#fff;font-weight:bold;margin-bottom:8px">لا توجد أعمال مطابقة للتصنيفات المحددة</div>
+        <div style="font-size:13px;color:#aaa;line-height:1.6;max-width:320px;margin:0 auto">جرب تحديد تصنيفات أخرى أو إزالة بعض التصنيفات لعرض المزيد من الأعمال.</div>
+        <button type="button" onclick="window.clearCategoryFilter('${baseKey}')" style="margin-top:18px;background:#e50914;color:#fff;border:none;padding:10px 20px;border-radius:10px;font-size:13px;font-weight:bold;cursor:pointer">
+          إزالة التصنيف وعرض جميع الأعمال
+        </button>
+      </div>
+    `;
+  }
+
+  main.innerHTML = `
+    <div class="page-header"><button class="back-btn" onclick="goBack()">${t("back_btn")}</button></div>
+    <div class="hero" style="height:100px;margin-top:0"><h1 style="font-size:26px">${catTitle}</h1></div>
+    ${filterBarHtml}
+    ${filterPanelHtml}
+    ${contentHtml}
+  `;
   setActiveNav(isAnimation ? "animation" : "anime");
 };
 window.navigateTo=(next,renderFn)=>{
@@ -2160,7 +2428,7 @@ window.openDetails=(fid)=>{
     let editPosterDetailBtn = (window.currentUserRole === "ADMIN") ? `<button type="button" onclick="openEditPosterModal('${item.firebaseId}')" style="background:#1a2a3a;color:#00d2ff;border:1px solid #2a4a6a;padding:8px 14px;border-radius:10px;font-size:13px;font-weight:bold;cursor:pointer;display:inline-flex;align-items:center;gap:6px">🖼️ تعديل البوستر</button>` : "";
     let reportDetailBtn = `<button type="button" onclick="openReportProblemModal('${item.firebaseId}', -1)" style="background:#260a0a;color:#ff6b6b;border:1px solid #4a1515;padding:8px 14px;border-radius:10px;font-size:13px;font-weight:bold;cursor:pointer;display:inline-flex;align-items:center;gap:6px">🚩 الإبلاغ عن مشكلة</button>`;
 
-    main.innerHTML=`<div class="page-header" style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px 4px 14px;margin-top:55px"><button class="back-btn" style="margin:0" onclick="goBack()">${t("back_btn")}</button>${orderBtnHtml}</div><div style="padding:15px;text-align:center"><img class="poster" data-poster-fid="${item.firebaseId}" src="${item.poster}" style="width:140px;height:140px;object-fit:contain;padding:10px;border-radius:18px"><div style="margin-top:10px;display:flex;justify-content:center;gap:8px;flex-wrap:wrap">${editPosterDetailBtn}${reportDetailBtn}</div><h1 style="margin-top:12px">${item.title}</h1><p style="color:#888">${item.year} • ${categoryLabel}</p>${window.renderDescriptionHtml(item.firebaseId)}</div><div id="episodesListContainer" style="padding:12px;display:flex;flex-direction:column;gap:8px"></div>`;
+    main.innerHTML=`<div class="page-header" style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px 4px 14px;margin-top:55px"><button class="back-btn" style="margin:0" onclick="goBack()">${t("back_btn")}</button>${orderBtnHtml}</div><div style="padding:15px;text-align:center"><img class="poster" data-poster-fid="${item.firebaseId}" src="${item.poster}" style="width:140px;height:140px;object-fit:contain;padding:10px;border-radius:18px"><div style="margin-top:10px;display:flex;justify-content:center;gap:8px;flex-wrap:wrap">${editPosterDetailBtn}${reportDetailBtn}</div><h1 style="margin-top:12px">${item.title}</h1><p style="color:#888">${item.year} • ${categoryLabel}</p>${(Array.isArray(item.genres) && item.genres.length > 0) ? `<div style="display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin:8px auto;max-width:360px">${item.genres.map(g => `<span style="background:#141f2d;color:#38bdf8;border:1px solid #1e3a5f;padding:3px 10px;border-radius:14px;font-size:11px;font-weight:600">🏷️ ${window.escapeDescHtml(g)}</span>`).join("")}</div>` : ""}${window.renderDescriptionHtml(item.firebaseId)}</div><div id="episodesListContainer" style="padding:12px;display:flex;flex-direction:column;gap:8px"></div>`;
 
     window.renderEpisodesList(item.firebaseId);
   });
@@ -2262,6 +2530,12 @@ window.matchesSearchQuery = function(item, rawQuery) {
   const alts = Array.isArray(item.alternativeTitles) ? item.alternativeTitles : [];
   for (const alt of alts) {
     if (alt && window.normalizeSearchText(alt).includes(q)) return true;
+  }
+
+  // 2.5 Genres match
+  const itemGenresList = Array.isArray(item.genres) ? item.genres : [];
+  for (const g of itemGenresList) {
+    if (g && window.normalizeSearchText(g).includes(q)) return true;
   }
 
   // 3. Category & Type match
@@ -2489,7 +2763,7 @@ window.openDetailsBack=()=>{
   let editPosterDetailBtn = (window.currentUserRole === "ADMIN") ? `<button type="button" onclick="openEditPosterModal('${item.firebaseId}')" style="background:#1a2a3a;color:#00d2ff;border:1px solid #2a4a6a;padding:8px 14px;border-radius:10px;font-size:13px;font-weight:bold;cursor:pointer;display:inline-flex;align-items:center;gap:6px">🖼️ تعديل البوستر</button>` : "";
   let reportDetailBtn = `<button type="button" onclick="openReportProblemModal('${item.firebaseId}', -1)" style="background:#260a0a;color:#ff6b6b;border:1px solid #4a1515;padding:8px 14px;border-radius:10px;font-size:13px;font-weight:bold;cursor:pointer;display:inline-flex;align-items:center;gap:6px">🚩 الإبلاغ عن مشكلة</button>`;
 
-  main.innerHTML=`<div class="page-header" style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px 4px 14px;margin-top:55px"><button class="back-btn" style="margin:0" onclick="goBack()">${t("back_btn")}</button>${orderBtnHtml}</div><div style="padding:15px;text-align:center"><img class="poster" data-poster-fid="${item.firebaseId}" src="${item.poster}" style="width:140px;height:140px;object-fit:contain;padding:10px;border-radius:18px"><div style="margin-top:10px;display:flex;justify-content:center;gap:8px;flex-wrap:wrap">${editPosterDetailBtn}${reportDetailBtn}</div><h1>${item.title}</h1><p style="color:#888">${item.year} • ${categoryLabel}</p>${window.renderDescriptionHtml(item.firebaseId)}</div><div id="episodesListContainer" style="padding:12px;display:flex;flex-direction:column;gap:8px"></div>`;
+  main.innerHTML=`<div class="page-header" style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px 4px 14px;margin-top:55px"><button class="back-btn" style="margin:0" onclick="goBack()">${t("back_btn")}</button>${orderBtnHtml}</div><div style="padding:15px;text-align:center"><img class="poster" data-poster-fid="${item.firebaseId}" src="${item.poster}" style="width:140px;height:140px;object-fit:contain;padding:10px;border-radius:18px"><div style="margin-top:10px;display:flex;justify-content:center;gap:8px;flex-wrap:wrap">${editPosterDetailBtn}${reportDetailBtn}</div><h1>${item.title}</h1><p style="color:#888">${item.year} • ${categoryLabel}</p>${(Array.isArray(item.genres) && item.genres.length > 0) ? `<div style="display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin:8px auto;max-width:360px">${item.genres.map(g => `<span style="background:#141f2d;color:#38bdf8;border:1px solid #1e3a5f;padding:3px 10px;border-radius:14px;font-size:11px;font-weight:600">🏷️ ${window.escapeDescHtml(g)}</span>`).join("")}</div>` : ""}${window.renderDescriptionHtml(item.firebaseId)}</div><div id="episodesListContainer" style="padding:12px;display:flex;flex-direction:column;gap:8px"></div>`;
 
   window.renderEpisodesList(item.firebaseId);
 };
@@ -2521,6 +2795,10 @@ window.renderAdminManageListHtml = function(filterText = "") {
     for (const alt of alts) {
       if (alt && window.normalizeSearchText(alt).includes(q)) return true;
     }
+    const gList = Array.isArray(item.genres) ? item.genres : [];
+    for (const g of gList) {
+      if (g && window.normalizeSearchText(g).includes(q)) return true;
+    }
     return false;
   });
   if (list.length === 0) {
@@ -2531,17 +2809,19 @@ window.renderAdminManageListHtml = function(filterText = "") {
     let categoryLabel = item.category || (isAnimation ? "أنميشن" : "مسلسل");
     let altsCount = (Array.isArray(item.alternativeTitles) ? item.alternativeTitles.length : 0);
     let altsBadge = altsCount > 0 ? `<span style="font-size:10px;background:#064e3b;color:#34d399;border:1px solid #059669;padding:1px 6px;border-radius:10px;margin-right:4px">${altsCount} اسم بديل</span>` : "";
+    let genresCount = (Array.isArray(item.genres) ? item.genres.length : 0);
+    let genresBadge = genresCount > 0 ? `<span style="font-size:10px;background:#0d283a;color:#38bdf8;border:1px solid #1e4d6b;padding:1px 6px;border-radius:10px;margin-right:4px">${genresCount} تصنيف</span>` : "";
     return `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:#161616;border:1px solid #282828;border-radius:12px;padding:8px 10px">
         <div style="display:flex;align-items:center;gap:10px;min-width:0;flex:1;cursor:pointer" onclick="openDetails('${item.firebaseId}')">
           <img class="poster" data-poster-fid="${item.firebaseId}" src="${item.poster}" style="width:48px;height:48px;border-radius:8px;object-fit:contain;margin:0;flex-shrink:0">
           <div style="min-width:0;flex:1">
             <div style="font-size:13px;font-weight:bold;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${item.title}</div>
-            <div style="font-size:11px;color:#888;margin-top:2px">${item.year || ""} • ${categoryLabel} ${altsBadge}</div>
+            <div style="font-size:11px;color:#888;margin-top:2px">${item.year || ""} • ${categoryLabel} ${genresBadge}${altsBadge}</div>
           </div>
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
-          <button type="button" onclick="openEditAlternativeTitlesModal('${item.firebaseId}')" style="background:#1b2a1e;color:#4ade80;border:1px solid #285430;padding:7px 9px;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer;display:flex;align-items:center;gap:4px" title="تعديل العمل والأسماء البديلة للبحث">✏️ تعديل والأسماء البديلة</button>
+          <button type="button" onclick="openEditAlternativeTitlesModal('${item.firebaseId}')" style="background:#1b2a1e;color:#4ade80;border:1px solid #285430;padding:7px 9px;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer;display:flex;align-items:center;gap:4px" title="تعديل العمل والتصنيفات والأسماء البديلة">✏️ تعديل والتصنيفات</button>
           <button type="button" onclick="openEditPosterModal('${item.firebaseId}')" style="background:#1a2a3a;color:#00d2ff;border:1px solid #2a4a6a;padding:7px 9px;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer;display:flex;align-items:center;gap:4px">🖼️ البوستر</button>
           <button type="button" onclick="renderAddEpisodeForm('${item.firebaseId}')" title="إدارة الحلقات" style="background:#222;color:#fff;border:1px solid #333;padding:7px 9px;border-radius:8px;font-size:12px;cursor:pointer">📺</button>
         </div>
@@ -2573,7 +2853,16 @@ window.renderAddPage=(isBack=false)=>{
   const newReportsCount = (window.allReportsList || []).filter(r => (r.status || "جديد") === "جديد").length;
   const totalReportsCount = (window.allReportsList || []).length;
 
+  setTimeout(() => { if (typeof window.renderAddGenresChips === 'function') window.renderAddGenresChips(); }, 20);
   main.innerHTML=`<div class="page-header"><button class="back-btn" onclick="goBack()">← رجوع</button></div><h1 style="padding:16px">لوحة التحكم</h1><div style="padding:12px;display:flex;flex-direction:column;gap:10px"><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><button onclick="startSelectEpisodeMode()" style="background:#fff;color:#000;border:none;padding:12px;border-radius:10px;font-weight:bold;cursor:pointer">📺 إضافة بث / تعديل بوستر</button><button onclick="toggleDeleteMode()" style="background:${deleteMode?'#fff':'#e50914'};color:${deleteMode?'#000':'#fff'};border:none;padding:12px;border-radius:10px;font-weight:bold;cursor:pointer">${deleteMode?'إلغاء':'🗑️ حذف'}</button></div><button onclick="openAdminReportsPage()" style="width:100%;background:linear-gradient(135deg,#e50914,#99050d);color:#fff;border:1px solid #ff4d4d;padding:13px;border-radius:12px;font-size:15px;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 4px 15px rgba(229,9,20,0.35)"><span>📩 البلاغات</span><span style="background:rgba(0,0,0,0.35);padding:2px 10px;border-radius:12px;font-size:12px">${newReportsCount > 0 ? `${newReportsCount} جديد` : `${totalReportsCount} بلاغ`}</span></button><div style="display:flex;gap:8px"><button onclick="showPage('home')" style="flex:1;background:#1a1a1a;color:#aaa;border:1px solid #333;padding:9px;border-radius:8px;cursor:pointer">🔒 إغلاق اللوحة</button><button onclick="confirmLogout()" style="flex:1;background:#250505;color:#ff6b6b;border:1px solid #441111;padding:9px;border-radius:8px;cursor:pointer;font-weight:bold">🚪 تسجيل الخروج</button></div><div style="background:#111;border:1px solid #222;border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:10px"><div style="font-weight:bold;font-size:14px;color:#00d2ff;display:flex;align-items:center;justify-content:space-between"><span>🖼️ إدارة المحتوى وتعديل البوسترات (${(window.allContent||[]).length})</span></div><input class="input" placeholder="ابحث عن فيلم أو مسلسل أو أنمي لتعديل البوستر..." oninput="filterAdminManageList(this.value)" style="padding:9px 12px;font-size:13px"><div id="adminManageContentList" style="display:flex;flex-direction:column;gap:8px;max-height:320px;overflow-y:auto;padding-right:2px">${window.renderAdminManageListHtml("")}</div></div><div style="background:#111;border:1px solid #222;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px"><div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px"><div style="font-weight:bold;font-size:14px;color:#00d2ff;display:flex;align-items:center;gap:6px">🔔 نظام إشعارات الهواتف (FCM + all_users)</div><span id="adminRegisteredDevicesBadge" style="background:#0d283a;color:#00d2ff;border:1px solid #1e4d6b;padding:3px 9px;border-radius:12px;font-size:11px;font-weight:bold">📱 الأجهزة المشتركة (all_users): ${activeDevCount} جهاز</span></div><p style="font-size:12px;color:#aaa;line-height:1.5">يتم إرسال إشعار تلقائي بالبوستر واسم العمل ورقم الحلقة لجميع الهواتف فور إضافة أي حلقة جديدة، كما يمكنك إرسال إشعار مخصص للجميع من الزر بالأسفل.</p><div id="adminLastBroadcastStatus" style="background:#0c141c;border:1px solid #1b2e40;padding:8px 10px;border-radius:8px;font-size:11px;color:#bbb;line-height:1.5">${latestNotifHtml}</div><div style="display:flex;gap:6px;flex-wrap:wrap"><button type="button" onclick="copyFcmToken()" style="flex:1;background:#1a2a3a;color:#00d2ff;border:1px solid #2a4a6a;padding:9px;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer">📋 نسخ رمز FCM لهذا الجهاز</button><button type="button" onclick="requestNotifPermission()" style="background:#222;color:#fff;border:1px solid #333;padding:9px;border-radius:8px;font-size:12px;cursor:pointer">🔔 طلب إذن الإشعارات</button></div><button type="button" onclick="openTestNotificationModal()" style="background:linear-gradient(135deg,#0072ff,#00d2ff);color:#000;border:none;padding:10px;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px">🚀 إرسال إشعار مخصص لجميع الهواتف (عنوان، بوستر، حلقة، أنمي)</button></div><hr style="border-color:#1f1f1f"><select id="addType" class="input"><option value="anime">أنمي</option><option value="animation">أنميشن</option></select><div style="display:flex;flex-direction:column;gap:6px"><label style="font-size:12px;color:#aaa">تصنيف الأنمي:</label><select id="addCategory" class="input"><option value="مسلسل">مسلسل</option><option value="فلم">فلم</option><option value="أوفا">أوفا</option><option value="خاصة">خاصة</option><option value="أونا">أونا</option></select><div style="display:flex;gap:6px;flex-wrap:wrap"><button type="button" onclick="document.getElementById('addCategory').value='مسلسل'" style="background:#1f1f1f;color:#fff;border:1px solid #333;padding:5px 12px;border-radius:12px;font-size:12px;cursor:pointer">مسلسل</button><button type="button" onclick="document.getElementById('addCategory').value='فلم'" style="background:#1f1f1f;color:#fff;border:1px solid #333;padding:5px 12px;border-radius:12px;font-size:12px;cursor:pointer">فلم</button><button type="button" onclick="document.getElementById('addCategory').value='أوفا'" style="background:#1f1f1f;color:#fff;border:1px solid #333;padding:5px 12px;border-radius:12px;font-size:12px;cursor:pointer">أوفا</button><button type="button" onclick="document.getElementById('addCategory').value='خاصة'" style="background:#1f1f1f;color:#fff;border:1px solid #333;padding:5px 12px;border-radius:12px;font-size:12px;cursor:pointer">خاصة</button><button type="button" onclick="document.getElementById('addCategory').value='أونا'" style="background:#1f1f1f;color:#fff;border:1px solid #333;padding:5px 12px;border-radius:12px;font-size:12px;cursor:pointer">أونا</button></div></div><input id="addTitle" class="input" placeholder="اسم العمل / الأنمي">
+<div style="background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px">
+  <div style="display:flex;align-items:center;justify-content:space-between">
+    <label style="font-size:13px;font-weight:bold;color:#00d2ff">🎬 تصنيفات العمل (يمكنك اختيار أكثر من تصنيف):</label>
+    <button type="button" onclick="window.clearAddSelectedGenres()" style="background:none;border:none;color:#888;font-size:11px;cursor:pointer">مسح التحديد</button>
+  </div>
+  <p style="font-size:11px;color:#888;margin:0">اختر التصنيفات المناسبة للعمل (أكشن، كوميدي، شونين، إلخ):</p>
+  <div id="addGenresChipsContainer" style="display:flex;flex-wrap:wrap;gap:6px;max-height:160px;overflow-y:auto;padding:4px 0"></div>
+</div>
 <div style="background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px">
   <div style="display:flex;align-items:center;justify-content:space-between">
     <label style="font-size:13px;font-weight:bold;color:#00d2ff">🏷️ الأسماء البديلة للبحث (اختياري):</label>
@@ -2608,7 +2897,8 @@ window.addNewContent=async()=>{
 
   let btn=document.getElementById("addBtn");btn.disabled=true;btn.innerText="⏳ جاري الإضافة وإرسال الإشعار...";
   try{
-    const newDocRef = await addDoc(colRef,{id:type+"-"+Date.now(),title,alternativeTitles,year:parseInt(year),type,category,description:desc,poster,video:video,altUrl:altUrl,episodes:[{title:"الحلقة 1",video,altUrl}],adminKey:"hamza2009",createdAt:serverTimestamp()});
+    let selectedGenres = Array.from(window.tempSelectedAddGenres || []);
+    const newDocRef = await addDoc(colRef,{id:type+"-"+Date.now(),title,alternativeTitles,genres:selectedGenres,year:parseInt(year),type,category,description:desc,poster,video:video,altUrl:altUrl,episodes:[{title:"الحلقة 1",video,altUrl}],adminKey:"hamza2009",createdAt:serverTimestamp()});
     try {
       await window.broadcastNotificationToAllDevices({
         title: "تمت إضافة حلقة جديدة!",
@@ -2627,6 +2917,7 @@ window.addNewContent=async()=>{
     window.tempPosterData="";
     window.tempVideoData="";
     window.tempAltTitles=[];
+    window.tempSelectedAddGenres=new Set();
     setTimeout(()=>showPage("home"),600);
   }catch(e){alert(e.message);btn.disabled=false;btn.innerText="إضافة العمل وإشعار المستخدمين";}
 };
@@ -4323,6 +4614,8 @@ window.openEditAlternativeTitlesModal = function(fid) {
   }
 
   window.renderModalAltTitles();
+  window.modalSelectedGenres = new Set(Array.isArray(item.genres) ? item.genres : []);
+  window.renderModalGenresChips();
 
   const modal = document.getElementById("editAltTitlesModal");
   if (modal) modal.style.display = "flex";
@@ -4394,6 +4687,7 @@ window.saveAlternativeTitlesFromModal = async function() {
   if (statusMsg) statusMsg.innerHTML = '<span style="color:#00d2ff">⏳ جاري حفظ الأسماء البديلة في قاعدة البيانات...</span>';
 
   const cleanList = (window.modalAltTitles || []).map(x => String(x || "").trim()).filter(Boolean);
+  const cleanGenres = Array.from(window.modalSelectedGenres || []);
   const mainTitleInput = document.getElementById("editAltTitlesMainTitleInput");
   const newTitle = (mainTitleInput && mainTitleInput.value.trim()) ? mainTitleInput.value.trim() : (item.title || "");
 
@@ -4401,12 +4695,14 @@ window.saveAlternativeTitlesFromModal = async function() {
     await updateDoc(doc(db, "movies", fid), {
       title: newTitle,
       alternativeTitles: cleanList,
+      genres: cleanGenres,
       adminKey: "hamza2009",
       poster: item.poster || "https://images.unsplash.com/photo-1536240478700-b869070f9279?w=400"
     });
 
     item.title = newTitle;
     item.alternativeTitles = cleanList;
+    item.genres = cleanGenres;
 
     if (statusMsg) statusMsg.innerHTML = '<span style="color:#4ade80">✅ تم حفظ الأسماء البديلة بنجاح!</span>';
 
@@ -4432,3 +4728,57 @@ window.saveAlternativeTitlesFromModal = async function() {
 </script>
 </body>
 </html>
+
+window.modalSelectedGenres = new Set();
+window.renderModalGenresChips = function() {
+  const container = document.getElementById("modalGenresChipsContainer");
+  if (!container) return;
+  container.innerHTML = window.APP_GENRES.map(g => {
+    const isSelected = window.modalSelectedGenres.has(g.ar);
+    return `
+      <button type="button" onclick="window.toggleModalGenre('${g.ar}')" style="background:${isSelected ? '#e50914' : '#1e1e1e'};color:${isSelected ? '#fff' : '#ccc'};border:1px solid ${isSelected ? '#e50914' : '#333'};padding:5px 10px;border-radius:14px;font-size:11px;font-weight:${isSelected ? 'bold' : 'normal'};cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+        <span>${isSelected ? '✓ ' : ''}${g.ar}</span>
+        <span style="font-size:9px;opacity:0.7">(${g.en})</span>
+      </button>
+    `;
+  }).join("");
+};
+window.toggleModalGenre = function(genreAr) {
+  if (window.modalSelectedGenres.has(genreAr)) {
+    window.modalSelectedGenres.delete(genreAr);
+  } else {
+    window.modalSelectedGenres.add(genreAr);
+  }
+  window.renderModalGenresChips();
+};
+window.clearModalSelectedGenres = function() {
+  window.modalSelectedGenres.clear();
+  window.renderModalGenresChips();
+};
+
+window.tempSelectedAddGenres = new Set();
+window.renderAddGenresChips = function() {
+  const container = document.getElementById("addGenresChipsContainer");
+  if (!container) return;
+  container.innerHTML = window.APP_GENRES.map(g => {
+    const isSelected = window.tempSelectedAddGenres.has(g.ar);
+    return `
+      <button type="button" onclick="window.toggleAddGenre('${g.ar}')" style="background:${isSelected ? '#e50914' : '#1e1e1e'};color:${isSelected ? '#fff' : '#ccc'};border:1px solid ${isSelected ? '#e50914' : '#333'};padding:5px 10px;border-radius:14px;font-size:11px;font-weight:${isSelected ? 'bold' : 'normal'};cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+        <span>${isSelected ? '✓ ' : ''}${g.ar}</span>
+        <span style="font-size:9px;opacity:0.7">(${g.en})</span>
+      </button>
+    `;
+  }).join("");
+};
+window.toggleAddGenre = function(genreAr) {
+  if (window.tempSelectedAddGenres.has(genreAr)) {
+    window.tempSelectedAddGenres.delete(genreAr);
+  } else {
+    window.tempSelectedAddGenres.add(genreAr);
+  }
+  window.renderAddGenresChips();
+};
+window.clearAddSelectedGenres = function() {
+  window.tempSelectedAddGenres.clear();
+  window.renderAddGenresChips();
+};
