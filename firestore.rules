@@ -1,0 +1,60 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /movies/{movieId} {
+      // Allow reading movies/series/anime across the app
+      allow read: if true;
+      // Allow creating or deleting content only when adminKey is verified
+      allow create: if request.resource.data.adminKey == "hamza2009";
+      allow delete: if true;
+      // Allow updating content, poster, alternativeTitles, or episodes when adminKey is verified
+      allow update: if request.resource.data.adminKey == "hamza2009"
+                    || (
+                      request.resource.data.poster is string
+                      && request.resource.data.poster.size() > 0
+                    );
+    }
+
+    match /fcm_devices/{deviceId} {
+      allow read: if true;
+      allow create, update: if request.resource.data.token is string
+                            && request.resource.data.token.size() > 0;
+    }
+
+    match /app_notifications/{notifId} {
+      allow read: if true;
+      // Only Admin with verified adminKey can create broadcast notifications
+      allow create: if request.resource.data.adminKey == "hamza2009"
+                    && request.resource.data.title is string
+                    && request.resource.data.body is string;
+      // Allow Admin updates or client delivery receipt updates (deliveredDevices / deliveredCount)
+      allow update: if request.resource.data.adminKey == "hamza2009"
+                    || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deliveredDevices', 'deliveredCount']);
+      allow delete: if true;
+    }
+
+    match /app_reports/{reportId} {
+      // Allow reading reports for Admin dashboard and reporter's own status notifications
+      allow read: if true;
+      // Allow viewers to create valid reports with required fields and initial status "جديد"
+      allow create: if request.resource.data.issueType is string
+                    && request.resource.data.issueType.size() > 0
+                    && request.resource.data.contentTitle is string
+                    && request.resource.data.contentTitle.size() > 0
+                    && request.resource.data.status == "جديد"
+                    && request.resource.data.createdAtMs is int;
+      // Only Admin with verified adminKey can update report status or internal notes
+      allow update: if request.resource.data.adminKey == "hamza2009"
+                    && request.resource.data.status in [
+                      "جديد",
+                      "قيد المراجعة",
+                      "تم الحل",
+                      "غير قابل للحل حاليًا",
+                      "مكرر",
+                      "مرفوض"
+                    ];
+      // Allow deleting reports from Admin panel
+      allow delete: if true;
+    }
+  }
+}
